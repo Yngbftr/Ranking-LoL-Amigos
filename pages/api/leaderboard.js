@@ -24,64 +24,117 @@ const tierOrder = {
   GOLD: 3,
   SILVER: 2,
   BRONZE: 1,
-  IRON: 0
+  IRON: 0,
+  UNRANKED: -1
 };
+
+const rankOrder = {
+  I: 4,
+  II: 3,
+  III: 2,
+  IV: 1
+};
+
+async function riotFetch(url) {
+  const res = await fetch(url, {
+    headers: {
+      "X-Riot-Token": RIOT_KEY
+    }
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Riot API ${res.status}: ${text}`);
+  }
+
+  return res.json();
+}
 
 export default async function handler(req, res) {
   try {
+    if (!RIOT_KEY) {
+      return res.status(500).json({
+        error: "Falta la variable RIOT_API_KEY en Vercel"
+      });
+    }
+
     const results = [];
 
     for (const player of players) {
-      const [gameName, tagLine] = player.split("#");
+      try {
+        const [gameName, tagLine] = player.split("#");
 
-      const accountRes = await fetch(
-        `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${tagLine}?api_key=${RIOT_KEY}`
-      );
-      const accountData = await accountRes.json();
-
-      const summonerRes = await fetch(
-        `https://euw1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${accountData.puuid}?api_key=${RIOT_KEY}`
-      );
-      const summonerData = await summonerRes.json();
-
-      const rankedRes = await fetch(
-        `https://euw1.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerData.id}?api_key=${RIOT_KEY}`
-      );
-      const rankedData = await rankedRes.json();
-
-      const solo = rankedData.find(
-        (q) => q.queueType === "RANKED_SOLO_5x5"
-      );
-
-      if (solo) {
-        const winrate = Math.round(
-          (solo.wins / (solo.wins + solo.losses)) * 100
+        const accountData = await riotFetch(
+          `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
         );
 
+        const summonerData = await riotFetch(
+          `https://euw1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${accountData.puuid}`
+        );
+
+        const rankedData = await riotFetch(
+          `https://euw1.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerData.id}`
+        );
+
+        const solo = Array.isArray(rankedData)
+          ? rankedData.find((q) => q.queueType === "RANKED_SOLO_5x5")
+          : null;
+
+        if (solo) {
+          const totalGames = solo.wins + solo.losses;
+          const winrate = totalGames > 0
+            ? Math.round((solo.wins / totalGames) * 100)
+            : 0;
+
+          results.push({
+            name: player,
+            tier: solo.tier,
+            rank: solo.rank,
+            lp: solo.leaguePoints,
+            wins: solo.wins,
+            losses: solo.losses,
+            winrate
+          });
+        } else {
+          results.push({
+            name: player,
+            tier: "UNRANKED",
+            rank: "-",
+            lp: 0,
+            wins: 0,
+            losses: 0,
+            winrate: 0
+          });
+        }
+      } catch (playerError) {
         results.push({
           name: player,
-          tier: solo.tier,
-          rank: solo.rank,
-          lp: solo.leaguePoints,
-          wins: solo.wins,
-          losses: solo.losses,
-          winrate
+          tier: "UNRANKED",
+          rank: "-",
+          lp: 0,
+          wins: 0,
+          losses: 0,
+          winrate: 0,
+          note: playerError.message
         });
       }
     }
 
     results.sort((a, b) => {
-      if (tierOrder[b.tier] !== tierOrder[a.tier]) {
-        return tierOrder[b.tier] - tierOrder[a.tier];
-      }
-      if (a.rank !== b.rank) {
-        return a.rank.localeCompare(b.rank);
-      }
+      const tierDiff = tierOrder[b.tier] - tierOrder[a.tier];
+      if (tierDiff !== 0) return tierDiff;
+
+      const aRank = rankOrder[a.rank] || 0;
+      const bRank = rankOrder[b.rank] || 0;
+      if (bRank !== aRank) return bRank - aRank;
+
       return b.lp - a.lp;
     });
 
-    res.status(200).json(results);
+    return res.status(200).json(results);
   } catch (err) {
-    res.status(500).json({ error: "Error" });
+    return res.status(500).json({
+      error: err.message || "Error obteniendo datos"
+    });
   }
 }

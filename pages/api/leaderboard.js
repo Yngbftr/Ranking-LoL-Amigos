@@ -28,85 +28,50 @@ const tierOrder = {
   UNRANKED: -1
 };
 
-const rankOrder = {
-  I: 4,
-  II: 3,
-  III: 2,
-  IV: 1
-};
+const rankOrder = { I: 4, II: 3, III: 2, IV: 1 };
 
 async function riotFetch(url) {
   const res = await fetch(url, {
-    headers: {
-      "X-Riot-Token": RIOT_KEY
-    }
+    headers: { "X-Riot-Token": RIOT_KEY }
   });
 
+  const text = await res.text();
+
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Riot API ${res.status}: ${text}`);
+    throw new Error(`HTTP ${res.status}: ${text}`);
   }
 
-  return res.json();
+  return text ? JSON.parse(text) : null;
 }
 
 export default async function handler(req, res) {
-  try {
-    if (!RIOT_KEY) {
-      return res.status(500).json({
-        error: "Falta la variable RIOT_API_KEY en Vercel"
-      });
-    }
+  if (!RIOT_KEY) {
+    return res.status(500).json({ error: "Falta RIOT_API_KEY en Vercel" });
+  }
 
-    const results = [];
+  const results = [];
 
-    for (const player of players) {
-      try {
-        const [gameName, tagLine] = player.split("#");
+  for (const player of players) {
+    try {
+      const [gameName, tagLine] = player.split("#");
 
-        const accountData = await riotFetch(
-          `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
-        );
+      const accountData = await riotFetch(
+        `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
+      );
 
-        const summonerData = await riotFetch(
-          `https://euw1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${accountData.puuid}`
-        );
+      const summonerData = await riotFetch(
+        `https://euw1.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${accountData.puuid}`
+      );
 
-        const rankedData = await riotFetch(
-          `https://euw1.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerData.id}`
-        );
+      const rankedData = await riotFetch(
+        `https://euw1.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerData.id}`
+      );
 
-        const solo = Array.isArray(rankedData)
-          ? rankedData.find((q) => q.queueType === "RANKED_SOLO_5x5")
-          : null;
+      const solo = Array.isArray(rankedData)
+        ? rankedData.find((q) => q.queueType === "RANKED_SOLO_5x5")
+        : null;
 
-        if (solo) {
-          const totalGames = solo.wins + solo.losses;
-          const winrate = totalGames > 0
-            ? Math.round((solo.wins / totalGames) * 100)
-            : 0;
-
-          results.push({
-            name: player,
-            tier: solo.tier,
-            rank: solo.rank,
-            lp: solo.leaguePoints,
-            wins: solo.wins,
-            losses: solo.losses,
-            winrate
-          });
-        } else {
-          results.push({
-            name: player,
-            tier: "UNRANKED",
-            rank: "-",
-            lp: 0,
-            wins: 0,
-            losses: 0,
-            winrate: 0
-          });
-        }
-      } catch (playerError) {
+      if (!solo) {
         results.push({
           name: player,
           tier: "UNRANKED",
@@ -115,26 +80,46 @@ export default async function handler(req, res) {
           wins: 0,
           losses: 0,
           winrate: 0,
-          note: playerError.message
+          debug: "Sin datos de Solo/Duo"
         });
+        continue;
       }
+
+      const totalGames = solo.wins + solo.losses;
+      const winrate = totalGames ? Math.round((solo.wins / totalGames) * 100) : 0;
+
+      results.push({
+        name: player,
+        tier: solo.tier,
+        rank: solo.rank,
+        lp: solo.leaguePoints,
+        wins: solo.wins,
+        losses: solo.losses,
+        winrate
+      });
+    } catch (e) {
+      results.push({
+        name: player,
+        tier: "UNRANKED",
+        rank: "-",
+        lp: 0,
+        wins: 0,
+        losses: 0,
+        winrate: 0,
+        debug: e.message
+      });
     }
-
-    results.sort((a, b) => {
-      const tierDiff = tierOrder[b.tier] - tierOrder[a.tier];
-      if (tierDiff !== 0) return tierDiff;
-
-      const aRank = rankOrder[a.rank] || 0;
-      const bRank = rankOrder[b.rank] || 0;
-      if (bRank !== aRank) return bRank - aRank;
-
-      return b.lp - a.lp;
-    });
-
-    return res.status(200).json(results);
-  } catch (err) {
-    return res.status(500).json({
-      error: err.message || "Error obteniendo datos"
-    });
   }
+
+  results.sort((a, b) => {
+    const tierDiff = (tierOrder[b.tier] ?? -1) - (tierOrder[a.tier] ?? -1);
+    if (tierDiff !== 0) return tierDiff;
+
+    const rankDiff = (rankOrder[b.rank] ?? 0) - (rankOrder[a.rank] ?? 0);
+    if (rankDiff !== 0) return rankDiff;
+
+    return b.lp - a.lp;
+  });
+
+  return res.status(200).json(results);
 }
